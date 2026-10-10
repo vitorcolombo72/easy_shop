@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # 1. Banco de dados PostgreSQL compartilhado
+  db:
+    image: postgres:15-alpine
+    container_name: promo_db
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-promocoes_db}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - promo-net
+
+  # 2. Redis (Broker de filas e cache)
+  redis:
+    image: redis:alpine
+    container_name: promo_redis
+    restart: always
+    networks:
+      - promo-net
+
+  # 3. Backend Principal (Django - Web/API/Admin)
+  web:
+    build: .
+    container_name: promo_web
+    restart: always
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=${SECRET_KEY:-django-insecure-chave-secreta-trocar-depois}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-promocoes_db}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    networks:
+      - promo-net
+
+  # 4. Worker de Background (Celery - Apontando para 'easy_shop')
+  worker:
+    build: .
+    container_name: promo_worker
+    restart: always
+    command: celery -A easy_shop worker -l info
+    volumes:
+      - .:/app
+    environment:
+      - DEBUG=True
+      - SECRET_KEY=${SECRET_KEY:-django-insecure-chave-secreta-trocar-depois}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-promocoes_db}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - db
+      - redis
+    networks:
+      - promo-net
+
+  # 5. Evolution API (Com variáveis de Redis corrigidas para a v2)
+  evolution-api:
+    image: evoapicloud/evolution-api:latest
+    container_name: promo_evolution_api
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_URL=http://localhost:8080
+      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY:-sua_chave_global_da_evolution}
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/evolution_db
+      - REDIS_ENABLED=true
+      - REDIS_URI=redis://redis:6379
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis:6379
+    volumes:
+      - evolution_instances:/evolution/instances
+    depends_on:
+      - db
+      - redis
+    networks:
+      - promo-net
+  
+volumes:
+  postgres_data:
+  evolution_instances:
+
+networks:
+  promo-net:
+    driver: bridge
